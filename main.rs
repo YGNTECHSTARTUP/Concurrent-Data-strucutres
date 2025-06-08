@@ -1,5 +1,5 @@
-use prac::{prosem, ticketlock};
+use prac::clhlock;
 
 fn main() {
-    ticketlock::a();
+    clhlock::cllock();
 }
