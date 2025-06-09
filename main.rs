@@ -1,5 +1,5 @@
-use prac::clhlock;
+use prac::mcsparklock;
 
 fn main() {
-    clhlock::cllock();
+    mcsparklock::mcsparklock();
 }
