@@ -1,7 +1,9 @@
 pub mod clhlock;
 pub mod crossbeam_example;
+pub mod linearzibility;
 pub mod mcslock;
+pub mod mcsparklock;
 pub mod memord;
 pub mod prosem;
 pub mod ticketlock;
-pub mod mcsparklock;
+pub mod locklink;

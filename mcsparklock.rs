@@ -1,10 +1,11 @@
 use std::{
     ptr::null_mut,
     sync::{
-        atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering::*},
         Arc,
+        atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering::*},
     },
     thread::{self, Thread},
+    time::Instant,
 };
 
 use crossbeam::utils::CachePadded;
@@ -102,12 +103,12 @@ pub fn mcsparklock() {
             }
         }));
     }
-
+    let start = Instant::now();
     for handle in handles {
         handle.join().unwrap();
     }
-
-    println!("Expected: {}", 8 * 100);
+    let duration = start.elapsed();
+    println!("Expected: {} completed in {:?}", 8 * 100, duration);
     println!(
         "Actual: {}",
         counter.load(std::sync::atomic::Ordering::Relaxed)

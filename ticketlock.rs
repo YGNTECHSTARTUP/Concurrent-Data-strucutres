@@ -1,6 +1,7 @@
 use std::{
     sync::{Arc, atomic::AtomicUsize},
     thread,
+    time::Instant,
 };
 
 struct TicketLock {
@@ -44,9 +45,15 @@ pub fn a() {
         });
         handles.push(hand);
     }
+    let start = Instant::now();
     for h in handles {
         h.join().unwrap();
     }
-    println!("Expected:{:?}", 8 * 100);
+    let duration = start.elapsed();
+    println!(
+        "Expected:{:?} completed at Duration {:?}",
+        8 * 100,
+        duration
+    );
     println!("Actual:{:?}", b.load(std::sync::atomic::Ordering::Relaxed));
 }

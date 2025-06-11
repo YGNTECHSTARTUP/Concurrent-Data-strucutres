@@ -1,5 +1,9 @@
-use prac::mcsparklock;
+use prac::{clhlock, mcslock::mcslock, mcsparklock, ticketlock};
 
 fn main() {
-    mcsparklock::mcsparklock();
+    // ticketlock::a();
+    clhlock::cllock();
+    // mcslock();
+
+    // mcsparklock::mcsparklock();
 }

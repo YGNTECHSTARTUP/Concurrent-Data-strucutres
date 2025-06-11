@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering::*},
     },
     thread::{self, JoinHandle},
+    time::Instant,
 };
 
 use crossbeam::utils::CachePadded;
@@ -38,14 +39,15 @@ impl McsLock {
 
     pub fn lock(&self) -> Token {
         let node = Node::new(true);
-        let prev = self.tail.swap(node, AcqRel);
+        let prev = self.tail.swap(node, Relaxed);
+        if prev.is_null() {
+            return Token(node);
+        }
 
-        if !prev.is_null() {
-            unsafe {
-                (*prev).next.store(node, Release);
-                while (*node).locked.load(Acquire) {
-                    std::hint::spin_loop();
-                }
+        unsafe {
+            (*prev).next.store(node, Release);
+            while (*node).locked.load(Acquire) {
+                std::hint::spin_loop();
             }
         }
 
@@ -54,27 +56,23 @@ impl McsLock {
 
     pub fn unlock(&self, token: Token) {
         let node = token.0;
-
-        // Try to reset the tail if we're the last
-        if unsafe { (*node).next.load(Acquire) }.is_null() {
+        let mut next = unsafe { (*node).next.load(Acquire) };
+        if next.is_null() {
             if self
                 .tail
-                .compare_exchange(node, null_mut(), Relaxed, Relaxed)
+                .compare_exchange(node, null_mut(), Release, Relaxed)
                 .is_ok()
             {
-                unsafe {
-                    drop(Box::from_raw(node));
-                }
+                drop(unsafe { Box::from_raw(node) });
                 return;
             }
-
-            // Wait for successor to link in
-            while unsafe { (*node).next.load(Acquire) }.is_null() {
-                std::hint::spin_loop();
+            while {
+                next = unsafe { (*node).next.load(Acquire) };
+                next.is_null()
+            } {
+                std::thread::yield_now();
             }
         }
-
-        let next = unsafe { (*node).next.load(Acquire) };
 
         unsafe {
             (*next).locked.store(false, Release);
@@ -82,10 +80,12 @@ impl McsLock {
         }
     }
 }
+
 pub fn mcslock() {
     let lock = Arc::new(McsLock::new());
     let counter = Arc::new(AtomicUsize::new(0));
     let mut handles = Vec::new();
+    let start = Instant::now();
 
     for _ in 0..8 {
         let lock = Arc::clone(&lock);
@@ -102,7 +102,8 @@ pub fn mcslock() {
     for handle in handles {
         handle.join().unwrap();
     }
+    let duration = start.elapsed();
 
-    println!("Expected: {}", 8 * 100);
+    println!("Expected: {} completed at {:?}", 8 * 100, duration);
     println!("Actual: {}", counter.load(Relaxed));
 }

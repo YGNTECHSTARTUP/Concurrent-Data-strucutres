@@ -4,6 +4,7 @@ use std::{
         atomic::{AtomicBool, AtomicPtr, AtomicUsize},
     },
     thread::{self, JoinHandle},
+    time::Instant,
 };
 
 use crossbeam::utils::CachePadded;
@@ -34,14 +35,16 @@ impl Clhlock {
     }
     pub fn lock(&self) -> Token {
         let node = Node::new(true);
-        let prev = self.ptr.swap(node, std::sync::atomic::Ordering::AcqRel);
+        let prev = self.ptr.swap(node, std::sync::atomic::Ordering::Relaxed);
         while unsafe { (*prev).locked.load(std::sync::atomic::Ordering::Acquire) } {
             std::hint::spin_loop();
         }
-        drop(unsafe { Box::from_raw(prev) });
+        unsafe {
+            drop(Box::from_raw(prev));
+        }
         Token(node)
     }
-    pub unsafe fn unlock(&self, token: Token) {
+    pub fn unlock(&self, token: Token) {
         unsafe {
             (*token.0)
                 .locked
@@ -53,7 +56,9 @@ impl Clhlock {
 impl Drop for Clhlock {
     fn drop(&mut self) {
         let node = self.ptr.get_mut();
-        drop(unsafe { Box::from_raw(node) });
+        unsafe {
+            drop(Box::from_raw(node));
+        }
     }
 }
 
@@ -68,19 +73,20 @@ pub fn cllock() {
             for _ in 0..100 {
                 let d = a.lock();
                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                unsafe {
-                    a.unlock(d);
-                }
+                a.unlock(d);
             }
         });
         handles.push(handle);
     }
+    let start = Instant::now();
     for h in handles {
         h.join().unwrap();
     }
-    println!("Expexted:{:?}", 8 * 100);
+    let duration = start.elapsed();
+    println!("Expexted:{:?} completed at {:?}", 8 * 100, duration);
     println!(
         "Actual Value:{:?}",
         counter.load(std::sync::atomic::Ordering::Relaxed)
     );
 }
+
