@@ -1,9 +1,5 @@
-use prac::{clhlock, mcslock::mcslock, mcsparklock, ticketlock};
+use prac::treiberstack;
 
 fn main() {
-    // ticketlock::a();
-    clhlock::cllock();
-    // mcslock();
-
-    // mcsparklock::mcsparklock();
+    treiberstack::tr();
 }
