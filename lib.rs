@@ -8,3 +8,4 @@ pub mod memord;
 pub mod prosem;
 pub mod ticketlock;
 pub mod treiberstack;
+pub mod msqueue;

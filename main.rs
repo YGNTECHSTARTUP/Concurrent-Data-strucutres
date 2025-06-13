@@ -1,5 +1,5 @@
-use prac::treiberstack;
+use prac::msqueue;
 
 fn main() {
-    treiberstack::tr();
+    msqueue::q();
 }

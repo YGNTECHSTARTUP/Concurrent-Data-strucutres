@@ -21,15 +21,16 @@ pub fn tr( ) {
     for i in 0..1000 {
         let a = Arc::clone(&a);
         let handle = thread::spawn(move||{
-            a.push(10);
+            a.push(i);
         });
         handles.push(handle);
     }
     
-    for i in 0..10000 {
+    for i in 0..1000 {
         let a = Arc::clone(&a);
         let handle = thread::spawn(move||{
-            a.pop();
+            let k = a.pop();
+            println!("{i}th iteration value = {:?}",k.unwrap());
         });
         handles.push(handle);
     }
