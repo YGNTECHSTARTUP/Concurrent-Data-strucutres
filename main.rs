@@ -1,5 +1,5 @@
-use prac::msqueue;
+use prac::lockfreelist;
 
 fn main() {
-    msqueue::q();
+    lockfreelist::lc();
 }

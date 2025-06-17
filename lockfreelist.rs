@@ -1,4 +1,4 @@
-use std::mem;
+use std::{mem, sync::Arc, thread};
 
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 
@@ -42,17 +42,6 @@ impl<K, V> Node<K, V> {
     }
 }
 
-impl<K, V> List<K, V>
-where
-    K: Ord,
-{
-    pub fn new() -> Self {
-        List {
-            head: Atomic::null(),
-        }
-    }
-}
-
 impl<K, V> Drop for List<K, V> {
     fn drop(&mut self) {
         let mut o_curr = mem::take(&mut self.head);
@@ -86,15 +75,6 @@ where
         }
     }
 
-    pub fn curr(&self) -> Shared<'g, Node<K, V>> {
-        self.curr()
-    }
-}
-
-impl<'g, K, V> Cursor<'g, K, V>
-where
-    K: Ord,
-{
     #[inline]
     pub fn find_h(&mut self, key: &K, guard: &'g Guard) -> Result<bool, ()> {
         let mut prev_next = self.curr;
@@ -206,24 +186,23 @@ where
     }
     #[inline]
     pub fn insert(
-        &self,
+        &mut self,
         mut node: Owned<Node<K, V>>,
         guard: &'g Guard,
     ) -> Result<(), Owned<Node<K, V>>> {
         node.next = self.curr.into();
-        let next = unsafe { self.curr.as_ref() }.unwrap().next;
         match self.prev.compare_exchange(
             self.curr,
-            next,
+            node,
             std::sync::atomic::Ordering::Release,
             std::sync::atomic::Ordering::Relaxed,
             guard,
         ) {
-            Ok(k) => {
+            Ok(node) => {
                 self.curr = node;
                 Ok(())
             }
-            Err(e) => return e.new,
+            Err(e) => Err(e.new),
         }
     }
     #[inline]
@@ -280,13 +259,22 @@ where
         } else {
             self.prev
                 .compare_exchange(
+                    prev_next,
                     self.curr,
-                    next,
                     std::sync::atomic::Ordering::Release,
                     std::sync::atomic::Ordering::Relaxed,
                     guard,
                 )
                 .map_err(|_| ())?;
+            let mut node = prev_next;
+            while node.with_tag(0) != self.curr {
+                let next = unsafe { node.deref() }
+                    .next
+                    .load(std::sync::atomic::Ordering::Relaxed, guard);
+                unsafe { guard.defer_destroy(node) };
+                node = next;
+            }
+            Ok(found)
         }
     }
 
@@ -347,4 +335,175 @@ where
             }
         })
     }
+}
+
+impl<K, V> List<K, V> {
+    pub fn new() -> Self {
+        List {
+            head: Atomic::null(),
+        }
+    }
+}
+impl<K, V> List<K, V>
+where
+    K: Ord,
+{
+    #[inline]
+    pub fn head<'g>(&'g self, guard: &'g Guard) -> Cursor<'g, K, V> {
+        Cursor::new(
+            &self.head,
+            self.head.load(std::sync::atomic::Ordering::Acquire, guard),
+        )
+    }
+    #[inline]
+    fn find<'g, F>(&'g self, key: &K, find: &F, guard: &'g Guard) -> (bool, Cursor<'g, K, V>)
+    where
+        F: Fn(&mut Cursor<'g, K, V>, &K, &'g Guard) -> Result<bool, ()>,
+    {
+        loop {
+            let mut cursor = self.head(guard);
+            if let Ok(r) = find(&mut cursor, key, guard) {
+                return (r, cursor);
+            }
+        }
+    }
+    #[inline]
+    fn lookup<'g, F>(&'g self, key: &K, find: F, guard: &'g Guard) -> Option<&'g V>
+    where
+        F: Fn(&mut Cursor<'g, K, V>, &K, &'g Guard) -> Result<bool, ()>,
+    {
+        let (found, cursor) = self.find(key, &find, guard);
+        if found { Some(cursor.lookup()) } else { None }
+    }
+    #[inline]
+    fn insert<'g, F>(&'g self, key: K, value: V, find: F, guard: &'g Guard) -> bool
+    where
+        F: Fn(&mut Cursor<'g, K, V>, &K, &'g Guard) -> Result<bool, ()>,
+    {
+        let mut node = Owned::new(Node::new(key, value));
+        loop {
+            let (found, mut cursor) = self.find(&node.key, &find, guard);
+            if found {
+                return false;
+            }
+            match cursor.insert(node, guard) {
+                Ok(()) => return true,
+                Err(n) => node = n,
+            }
+        }
+    }
+
+    #[inline]
+    fn delete<'g, F>(&'g self, key: &K, find: F, guard: &'g Guard) -> Option<&'g V>
+    where
+        F: Fn(&mut Cursor<'g, K, V>, &K, &'g Guard) -> Result<bool, ()>,
+    {
+        loop {
+            let (found, mut cursor) = self.find(key, &find, guard);
+            if !found {
+                return None;
+            }
+            if let Ok(value) = cursor.delete(guard) {
+                return Some(value);
+            }
+        }
+    }
+    pub fn harris_lookup<'g>(&'g self, key: &K, guard: &'g Guard) -> Option<&'g V> {
+        self.lookup(key, Cursor::find_h, guard)
+    }
+
+    /// Insert the value with the Harris strategy.
+    pub fn harris_insert<'g>(&'g self, key: K, value: V, guard: &'g Guard) -> bool {
+        self.insert(key, value, Cursor::find_h, guard)
+    }
+
+    /// Attempts to delete the value with the Harris strategy.
+    pub fn harris_delete<'g>(&'g self, key: &K, guard: &'g Guard) -> Option<&'g V> {
+        self.delete(key, Cursor::find_h, guard)
+    }
+
+    /// Lookups the value at `key` with the Harris-Michael strategy.
+    pub fn harris_michael_lookup<'g>(&'g self, key: &K, guard: &'g Guard) -> Option<&'g V> {
+        self.lookup(key, Cursor::find_hm, guard)
+    }
+
+    /// Insert a `key`-`value`` pair with the Harris-Michael strategy.
+    pub fn harris_michael_insert(&self, key: K, value: V, guard: &Guard) -> bool {
+        self.insert(key, value, Cursor::find_hm, guard)
+    }
+
+    /// Delete the value at `key` with the Harris-Michael strategy.
+    pub fn harris_michael_delete<'g>(&'g self, key: &K, guard: &'g Guard) -> Option<&'g V> {
+        self.delete(key, Cursor::find_hm, guard)
+    }
+
+    /// Lookups the value at `key` with the Harris-Herlihy-Shavit strategy.
+    pub fn harris_herlihy_shavit_lookup<'g>(&'g self, key: &K, guard: &'g Guard) -> Option<&'g V> {
+        self.lookup(key, Cursor::find_hms, guard)
+    }
+}
+
+pub fn lc() {
+    // Use Arc to share the list among threads
+    // Number of threads
+    let list = Arc::new(List::<i32, String>::new());
+    let thread_count = 4;
+    use crossbeam_epoch as epoch;
+    // Insert some elements concurrently
+    let mut handles = vec![];
+    for i in 0..thread_count {
+        let list = Arc::clone(&list);
+        handles.push(thread::spawn(move || {
+            let guard = &epoch::pin(); // Hazard pointer guard
+
+            for j in 0..5 {
+                let key = i * 10 + j;
+                let value = format!("val-{}", key);
+                let inserted = list.harris_michael_insert(key, value, guard);
+                println!("[Thread {i}] Inserted key {key}: {inserted}");
+            }
+        }));
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    println!("\n--- Lookup Phase ---");
+    // Look up some keys
+    {
+        let guard = &epoch::pin();
+        for key in [3, 12, 21, 30, 33] {
+            match list.harris_michael_lookup(&key, guard) {
+                Some(v) => println!("Lookup key {key}: Found value '{}'", v),
+                None => println!("Lookup key {key}: Not found"),
+            }
+        }
+    }
+
+    println!("\n--- Deletion Phase ---");
+    // Delete a few keys
+    {
+        let guard = &epoch::pin();
+        for key in [12, 21] {
+            match list.harris_michael_delete(&key, guard) {
+                Some(v) => println!("Deleted key {key}: value '{}'", v),
+                None => println!("Delete key {key}: Not found"),
+            }
+        }
+    }
+
+    println!("\n--- Post-Deletion Lookup ---");
+    // Re-lookup deleted keys
+    {
+        let guard = &epoch::pin();
+        for key in [12, 21] {
+            match list.harris_michael_lookup(&key, guard) {
+                Some(v) => println!("Lookup key {key}: Found value '{}'", v),
+                None => println!("Lookup key {key}: Not found"),
+            }
+        }
+    }
+
+    println!("\nDone.");
 }
